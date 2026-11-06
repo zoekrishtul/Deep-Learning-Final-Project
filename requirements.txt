@@ -1,0 +1,14 @@
+# Starter dependencies; record a tested environment before experiments.
+# Install a hardware-appropriate PyTorch build first.
+torch
+torchvision
+transformers
+accelerate
+qwen-vl-utils
+datasets
+Pillow
+numpy
+scikit-learn
+scipy
+tqdm
+# CLIP can be loaded through transformers; no separate CLIP package required.

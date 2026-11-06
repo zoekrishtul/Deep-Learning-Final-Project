@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+.pytest_cache/
+# Local settings and secrets
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+# Data and generated outputs (keep folder documentation)
+data/*
+!data/README.md
+results/*
+!results/README.md
+checkpoints/
+models/
+.cache/
+wandb/
+runs/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
