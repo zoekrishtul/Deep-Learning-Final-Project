@@ -22,7 +22,7 @@ Official metrics and paired comparisons are in `src/evaluation.py` (Zoe).
 | `step_by_step` | done | Generic chain-of-thought: describe each path, reason, then answer. No task-specific structure, so it isolates the effect of reasoning before answering |
 | `structured` | done | Task-specific reasoning mirroring the paper's decomposition: (1) which descriptors matter for the scenario and whether lower/higher is better, (2) compare the paths on each from the image, (3) decide. Gives descriptor *definitions*, never their values |
 
-The exact prompt text is in `src/prompting.py` (`TEMPLATES`) and is saved with every run in the config file.
+The exact prompt text is in `src/prompting.py` (`BODIES and build_prompt`) and is saved with every run in the config file.
 
 Every strategy can also be combined with Zoe's visual scaffolding (`--scaffold-dir`: the two paths shown as
 separate images) and with grounding evidence (`--grounding clip --attributes FILE`, or `--grounding oracle`).

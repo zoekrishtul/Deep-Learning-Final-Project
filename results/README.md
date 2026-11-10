@@ -1,5 +1,7 @@
 # Experiment outputs
 
-Keep prediction JSONL, metrics, transformed images, and run configurations locally here (ignored by Git). Each run should record the condition, dataset split/IDs, seed, model revision, dependency versions, and generation settings.
+Generated predictions, metrics, transformed images, and configurations belong here locally and are ignored by Git. Preserve condition, exact IDs, seed, model revision, dependency versions, and generation settings.
 
-See [the project guide](../docs/README.md) for the prediction contract. No real results are included in this starter.
+The completed Kaggle check used /kaggle/working/smoke_test_01/, not this local folder. Its table is summarized in [milestone results](../docs/milestone-results.md); raw predictions/configurations are not yet checked in.
+
+Use a fresh directory for changed settings. Current resume logic does not validate existing run configurations.

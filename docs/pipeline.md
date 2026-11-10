@@ -33,16 +33,17 @@ image and with the left and right halves swapped.
 | `structured+clip` | structured | combined | CLIP predictions | **Grounding + reasoning (combined)** |
 | `structured+oracle` | structured | combined | true attributes | Upper bound: how much perfect grounding could help |
 
-The oracle uses the same two attributes as the CLIP heads, so the gap between `structured+clip` and
-`structured+oracle` is caused by CLIP's prediction errors alone.
+The oracle uses the same two attributes as the CLIP heads. The gap between `structured+clip` and
+`structured+oracle` reflects both attribute quality and evidence presentation: oracle evidence is described as exact and omits confidence scores. It does not isolate prediction errors alone.
 
 ## How to run
 
-**Kaggle (recommended):** `notebooks/kaggle_pipeline.ipynb`. GPU T4 x2, Internet on, attach the
-`patheval-2d-test` dataset, add the `GITHUB_TOKEN` secret (and optionally `HF_TOKEN`). Choose conditions in the
-settings cell. Reasoning conditions write far more text than direct, so running everything takes several hours.
+**Kaggle (recommended):** notebooks/kaggle_pipeline.ipynb. GPU T4 x2, Internet on.
+The notebook installs dependencies and uses attached prepared test data or downloads it directly when absent.
+No GitHub token is required for the public repository; HF_TOKEN is optional. The root README gives a small
+15-example configuration. Reasoning conditions write far more text than direct, so running everything takes several hours.
 Use *Save Version → Save & Run All* so it runs in the background, and start with fewer conditions or
-`RUN_SWAPPED = False` when time is short. Every run resumes from its output file.
+`RUN_SWAPPED = False` when time is short. Runs resume from their output files; use a new output directory if code, data, or settings change.
 
 **Command line (any CUDA machine):**
 ```sh
@@ -81,7 +82,7 @@ Saved as `results/comparison.csv`.
 `lower` is the path with the lower value, relative to the image as shown. For the swapped layout, the CLIP
 heads are run again on the swapped halves, rather than flipping the earlier answer.
 
-In the prompt this becomes, for example:
+The current prompt describes the score as a probability, although the softmax score has not been calibrated. For example:
 ```
 A perception model estimated the following from the image. It can be wrong; the confidence is its
 estimated probability of being right.
