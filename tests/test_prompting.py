@@ -43,6 +43,13 @@ class TestParseAnswer(unittest.TestCase):
         text = "The format is Answer: Path 1 or Path 2.\nThinking...\nAnswer: Path 2."
         self.assertEqual(prompting.parse_answer(text), 2)
 
+    def test_copied_format_line_is_not_an_answer(self):
+        self.assertIsNone(prompting.parse_answer("Answer: Path 1   or   Answer: Path 2"))
+        self.assertIsNone(prompting.parse_answer("Answer: Path 1 or Path 2."))
+        # ...but a real answer before or after a copied format line still counts.
+        self.assertEqual(prompting.parse_answer("Answer: Path 1\nAnswer: Path 1 or Path 2"), 1)
+        self.assertEqual(prompting.parse_answer("Answer: Path 1 or Path 2\nAnswer: Path 2"), 2)
+
     def test_fallback_single_mention(self):
         self.assertEqual(prompting.parse_answer("I would choose Path 1 here."), 1)
 
@@ -68,9 +75,41 @@ class TestPrompts(unittest.TestCase):
         with self.assertRaises(ValueError):
             prompting.build_prompt(make_sample(1), "magic")
 
-    def test_unimplemented_strategy(self):
-        with self.assertRaises(NotImplementedError):
-            prompting.build_prompt(make_sample(1), "structured")
+    def test_all_strategies_build_and_ask_for_parseable_answer(self):
+        sample = make_sample(1)
+        for strategy in prompting.STRATEGIES:
+            prompt = prompting.build_prompt(sample, strategy)
+            self.assertTrue(prompt.startswith("Scenario A."), strategy)
+            self.assertIn(prompting.LAYOUT, prompt, strategy)
+            self.assertIn("Answer: Path", prompt, strategy)
+
+    def test_reasoning_prompts_differ(self):
+        sample = make_sample(1)
+        cot = prompting.build_prompt(sample, "step_by_step")
+        structured = prompting.build_prompt(sample, "structured")
+        self.assertIn("step by step", cot)
+        self.assertNotIn("Step 1", cot)                      # generic: no task structure
+        for part in ("Step 1", "Step 2", "Step 3", "Smoothness", "Sharp turns"):
+            self.assertIn(part, structured)
+
+    def test_reasoning_prompts_leak_no_labels_or_values(self):
+        sample = make_sample(1)                               # descriptors {"x": 1} / {"x": 2}
+        for strategy in prompting.STRATEGIES:
+            prompt = prompting.build_prompt(sample, strategy)
+            self.assertNotIn("descriptors", prompt)
+            self.assertNotIn("'x'", prompt)
+
+    def test_reasoning_output_is_parsed_from_final_line(self):
+        # A typical reasoning answer mentions both paths before the final line.
+        text = ("Step 2 - Comparison: Path 1 is shorter, Path 2 is smoother.\n"
+                "Step 3 - Decision: smoothness matters more here.\n"
+                "Answer: Path 2")
+        self.assertEqual(prompting.parse_answer(text), 2)
+
+    def test_token_budget_per_strategy(self):
+        budgets = prompting.DEFAULT_MAX_NEW_TOKENS
+        self.assertEqual(set(budgets), set(prompting.STRATEGIES))
+        self.assertLess(budgets["direct"], budgets["step_by_step"])
 
 
 class TestData(unittest.TestCase):
@@ -156,6 +195,14 @@ class TestRunAndSummarize(unittest.TestCase):
         self.assertAlmostEqual(s["accuracy"], 0.5)          # always "Path 2", 3/6 labels are 2
         self.assertAlmostEqual(s["swap"]["same_side"], 1.0)  # pure position bias
         self.assertAlmostEqual(s["swap"]["consistent"], 0.0)
+
+    def test_run_reasoning_strategy_records_budget(self):
+        out = self.tmp / "s.jsonl"
+        prompting.run(self.manifest, self.tmp, out, FakeEvaluator(), strategy="structured")
+        self.assertEqual(data.read_jsonl(out)[0]["condition"], "structured")
+        with open(f"{out}.config.json") as f:
+            cfg = json.load(f)
+        self.assertEqual(cfg["generation"]["max_new_tokens"], 1024)
 
     def test_config_records_sample_ids(self):
         out = self.tmp / "p.jsonl"

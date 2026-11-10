@@ -19,8 +19,10 @@ Official metrics and paired comparisons are in `src/evaluation.py` (Zoe).
 | Strategy | Status | Idea |
 | --- | --- | --- |
 | `direct` | done | Scenario + layout, ask for `Answer: Path 1 or Path 2` (prompt from the original PathEval code) |
-| `step_by_step` | next | Generic chain-of-thought before the answer |
-| `structured` | next | Identify relevant descriptors → compare paths on each → decide |
+| `step_by_step` | done | Generic chain-of-thought: describe each path, reason, then answer. No task-specific structure, so it isolates the effect of reasoning before answering |
+| `structured` | done | Task-specific reasoning mirroring the paper's decomposition: (1) which descriptors matter for the scenario and whether lower/higher is better, (2) compare the paths on each from the image, (3) decide. Gives descriptor *definitions*, never their values |
+
+The exact prompt text is in `src/prompting.py` (`TEMPLATES`) and is saved with every run in the config file.
 
 Every strategy can also be run with `--swap`: the left and right halves of the image are swapped and the label is
 flipped. A model that judges path content picks the same underlying path in both layouts; a position-biased model
@@ -29,7 +31,8 @@ picks the same side.
 ## How to run
 
 **On Kaggle (needs a GPU).** Open `notebooks/kaggle_prompting.ipynb`, set Accelerator to *GPU T4 x2*, add the
-`patheval-2d-test` dataset, and add a Kaggle secret `GITHUB_TOKEN` (classic token with `repo` scope). Run all.
+`patheval-2d-test` dataset, and add a Kaggle secret `GITHUB_TOKEN` (classic token with `repo` scope). Pick the
+strategies in the settings cell (default: all three, each also swapped) and run all.
 
 **From the command line (any CUDA machine with ≥16 GB of GPU memory in total):**
 
@@ -81,8 +84,14 @@ content. This matches the paper's finding that low-level perception is the bottl
 - **float16** on Kaggle T4s, which lack fast bfloat16; the model is split across both GPUs (~8 GB each).
 - **Batching** (8 per batch) halves the time per sample (4.0 s → 2.0 s) with identical answers on a check of 8 samples.
   Left padding is required so every prompt ends where generation starts.
-- **Parsing** takes the *last* `Answer: Path N`, so reasoning prompts that restate the format are parsed correctly;
-  if there is no `Answer:` line, it falls back to the path only if exactly one path is mentioned.
+- **Parsing** takes the *last* line with `Answer: Path N`, since reasoning prompts think aloud before answering. Lines
+  that name both paths (e.g. the model copying the format line `Answer: Path 1 or Answer: Path 2`) are skipped.
+  If there is no usable `Answer:` line, it falls back to the path only if exactly one path is mentioned; otherwise
+  the answer is invalid (`null`).
+- **Token budgets per strategy** (`DEFAULT_MAX_NEW_TOKENS`): 256 for direct, 768 for step-by-step, 1024 for
+  structured. A reasoning answer cut off before its final line would parse as invalid, so a rising invalid rate
+  is the signal to raise the budget.
+- **All strategies use the same final-answer format** so they are parsed identically and compared fairly.
 - **No descriptors in prompts** for visual-only conditions. Descriptors stay in the manifest for evaluation and for a
   separately named oracle condition.
 - **Data quirks** (see `src/data.py`): one test record's image path is missing its subfolder; `combined_images_2`
