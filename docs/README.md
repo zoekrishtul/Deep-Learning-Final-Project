@@ -36,15 +36,17 @@ docs/README.md             Project guide
 requirements.txt          Shared starting dependencies
 src/__init__.py
 src/prompting.py           Gaurav (guide: docs/prompting.md)
-src/data.py                PathEval manifest adapter and image loading (Gaurav)
-tests/test_prompting.py    GPU-free tests for prompting and data (Gaurav)
+src/data.py                PathEval manifest adapter, downloads, and image loading (Gaurav)
+src/pipeline.py            Runs all conditions and compares them (guide: docs/pipeline.md)
+tests/                     GPU-free tests for prompting, data, grounding, and the pipeline
 src/grounding.py           Yu-Jye
 src/visual_scaffolding.py  Zoe
 src/evaluation.py          Zoe
 data/README.md             Local dataset instructions
 results/README.md          Prediction/output conventions
 notebooks/README.md        Exploratory notebooks
-notebooks/kaggle_*.ipynb   Kaggle data setup and prompting runner (Gaurav)
+notebooks/kaggle_*.ipynb   Kaggle: data setup, prompting runner, full pipeline
+notebooks/Clip+ MLP.ipynb  Yu-Jye's grounding exploration (module: src/grounding.py)
 ```
 
 ## Shared integration contract (proposed)

@@ -24,6 +24,10 @@ Official metrics and paired comparisons are in `src/evaluation.py` (Zoe).
 
 The exact prompt text is in `src/prompting.py` (`TEMPLATES`) and is saved with every run in the config file.
 
+Every strategy can also be combined with Zoe's visual scaffolding (`--scaffold-dir`: the two paths shown as
+separate images) and with grounding evidence (`--grounding clip --attributes FILE`, or `--grounding oracle`).
+See `docs/pipeline.md` for the full set of conditions.
+
 Every strategy can also be run with `--swap`: the left and right halves of the image are swapped and the label is
 flipped. A model that judges path content picks the same underlying path in both layouts; a position-biased model
 picks the same side.
