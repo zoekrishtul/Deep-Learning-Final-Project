@@ -8,7 +8,7 @@ CS 5787 Deep Learning final project. **Can learned visual grounding and structur
 | --- | --- | --- |
 | Gaurav Patel | gp438 | Qwen2-VL inference and three prompting strategies; dataset adapter and combined pipeline integration |
 | Yu-Jye Hu | yh2444 | CLIP feature extraction, linear/MLP grounding method, and training experiments |
-| Zoe Krishtul | zrk | Image-only visual scaffolding, ID-aligned accuracy/invalid-answer evaluation, and integrated prototype run |
+| Zoe Krishtul | zrk7 | Image-only visual scaffolding, ID-aligned accuracy/invalid-answer evaluation, and integrated prototype run |
 
 Yu-Jye's original exploration is preserved in `notebooks/Clip+ MLP.ipynb`. Gaurav adapted it into `src/grounding.py`; differences are documented there. Zoe's `evaluate()` supplies core metrics; paired McNemar comparisons and swap reporting are implemented in the combined pipeline.
 
