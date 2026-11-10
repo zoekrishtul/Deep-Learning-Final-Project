@@ -35,13 +35,16 @@ The requirements are an initial dependency list, not a tested lockfile. Select t
 docs/README.md             Project guide
 requirements.txt          Shared starting dependencies
 src/__init__.py
-src/prompting.py           Gaurav
+src/prompting.py           Gaurav (guide: docs/prompting.md)
+src/data.py                PathEval manifest adapter and image loading (Gaurav)
+tests/test_prompting.py    GPU-free tests for prompting and data (Gaurav)
 src/grounding.py           Yu-Jye
 src/visual_scaffolding.py  Zoe
 src/evaluation.py          Zoe
 data/README.md             Local dataset instructions
 results/README.md          Prediction/output conventions
 notebooks/README.md        Exploratory notebooks
+notebooks/kaggle_*.ipynb   Kaggle data setup and prompting runner (Gaurav)
 ```
 
 ## Shared integration contract (proposed)
