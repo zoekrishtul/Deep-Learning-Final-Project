@@ -6,6 +6,7 @@ Usage (from the repository root):
     python -m src.prompting run --manifest data/test_2D.jsonl --data-root data/ \\
         --strategy direct --n-per-scenario 10 --out results/direct_2D.jsonl
 
+    # Other strategies: --strategy step_by_step | structured
     # Same examples with the left/right halves swapped (position-bias test)
     python -m src.prompting run ... --swap --out results/direct_2D_swapped.jsonl
 
@@ -26,7 +27,8 @@ Design notes:
 
 Based on the zero-shot setup of Aghzal et al. (CVPR 2025),
 https://github.com/MohamedAghzal/PathEval/blob/main/zero-shot/qwen_zeroshot.py
-(prompt wording for direct prompting is taken from that script).
+(prompt wording for direct prompting and the descriptor definitions used by
+the structured prompt are taken from that repository).
 """
 
 import argparse
@@ -44,8 +46,11 @@ from pathlib import Path
 from src.data import load_manifest, load_pair_image, read_jsonl, stratified_subset
 
 STRATEGIES = ("direct", "step_by_step", "structured")
-IMPLEMENTED = ("direct",)
 DEFAULT_MODEL = "Qwen/Qwen2-VL-7B-Instruct"
+
+# Reasoning prompts write much more before the answer; too small a budget cuts the
+# answer off (it then parses as invalid), so each strategy gets its own default.
+DEFAULT_MAX_NEW_TOKENS = {"direct": 256, "step_by_step": 768, "structured": 1024}
 
 
 # --------------------------------------------------------------------------
@@ -54,6 +59,11 @@ DEFAULT_MODEL = "Qwen/Qwen2-VL-7B-Instruct"
 
 LAYOUT = "Path 1 is on the left side and Path 2 is on the right side."
 
+# Final-answer line shared by the reasoning prompts, so all strategies are parsed the same way.
+FINAL_ANSWER = ("After your reasoning, end with one final line in exactly this format:\n"
+                "Answer: Path 1   or   Answer: Path 2")
+
+# 1. Direct: answer immediately (wording from the original PathEval zero-shot code).
 DIRECT_TEMPLATE = (
     "{scenario} " + LAYOUT + "\n"
     "Your answer should follow the format below:\n"
@@ -61,14 +71,55 @@ DIRECT_TEMPLATE = (
     "Explanation: Why you chose the path (1 or 2)."
 )
 
+# 2. Step-by-step: generic chain-of-thought. Asks the model to reason first but gives
+#    no task-specific structure, so it isolates the effect of "thinking before answering".
+STEP_BY_STEP_TEMPLATE = (
+    "{scenario} " + LAYOUT + "\n"
+    "Let's think step by step. First describe what you see in each path, "
+    "then reason about which path better satisfies the scenario.\n"
+    + FINAL_ANSWER
+)
+
+# 3. Structured: task-specific reasoning that mirrors the paper's decomposition of
+#    PathEval into (a) abstraction: which descriptors the scenario cares about,
+#    (b) perception: how the two paths compare on each, (c) integration: the decision.
+#    Descriptor definitions are from the original PathEval perception prompt.
+DESCRIPTOR_DEFINITIONS = (
+    "- Minimum clearance: the smallest distance between the path and the obstacles.\n"
+    "- Maximum clearance: the largest distance between the path and the obstacles.\n"
+    "- Average clearance: the average distance between the path and the obstacles.\n"
+    "- Path length: the total length of the path.\n"
+    "- Smoothness: the sum of absolute angles between path segments "
+    "(a lower value means a smoother path).\n"
+    "- Sharp turns: the number of turns sharper than 90 degrees.\n"
+    "- Maximum angle: the sharpest turn angle in the path."
+)
+
+STRUCTURED_TEMPLATE = (
+    "{scenario} " + LAYOUT + "\n"
+    "Paths can be described by these properties:\n" + DESCRIPTOR_DEFINITIONS + "\n"
+    "Work through the following steps.\n"
+    "Step 1 - Relevant properties: list the properties that matter for this scenario, "
+    "and for each say whether a lower or a higher value is better.\n"
+    "Step 2 - Comparison: for each relevant property, look at the image and state which "
+    "path is better (Path 1, Path 2, or about equal), with a short reason.\n"
+    "Step 3 - Decision: weigh the comparisons from Step 2 and decide which path better "
+    "satisfies the scenario.\n"
+    + FINAL_ANSWER
+)
+
+TEMPLATES = {
+    "direct": DIRECT_TEMPLATE,
+    "step_by_step": STEP_BY_STEP_TEMPLATE,
+    "structured": STRUCTURED_TEMPLATE,
+}
+
 
 def build_prompt(sample, strategy="direct"):
-    """Build the text prompt for one sample. Uses only the scenario text."""
+    """Build the text prompt for one sample. Uses only the scenario text (no labels/descriptors)."""
     if strategy not in STRATEGIES:
         raise ValueError(f"Unknown prompting strategy: {strategy!r}")
-    if strategy == "direct":
-        return DIRECT_TEMPLATE.format(scenario=sample["scenario"])
-    raise NotImplementedError(f"Strategy {strategy!r} is not implemented yet")
+    return TEMPLATES[strategy].format(scenario=sample["scenario"])
 
 
 # --------------------------------------------------------------------------
@@ -82,16 +133,20 @@ _PATH_RE = re.compile(r"Path\s*([12])\b", re.IGNORECASE)
 def parse_answer(text):
     """Extract the chosen path (1 or 2) from model output; None if unclear.
 
-    1. Use the LAST "Answer: Path N" in the text (reasoning prompts may restate
-       the format or think aloud before the final answer).
+    1. Use the LAST line containing "Answer: Path N" (reasoning prompts think aloud
+       before the final answer). Lines naming both paths, e.g. a copied format line
+       "Answer: Path 1 or Answer: Path 2", are skipped as ambiguous.
     2. Otherwise, if the text mentions only one of Path 1 / Path 2, use it.
     3. Otherwise return None (counted as invalid, never guessed).
     """
     if not text:
         return None
-    answers = _ANSWER_RE.findall(text)
-    if answers:
-        return int(answers[-1])
+    for line in reversed(text.splitlines()):
+        answers = set(_ANSWER_RE.findall(line))
+        if not answers:
+            continue
+        if len(answers | set(_PATH_RE.findall(line))) == 1:
+            return int(answers.pop())
     mentioned = set(_PATH_RE.findall(text))
     if len(mentioned) == 1:
         return int(mentioned.pop())
@@ -180,10 +235,9 @@ def make_record(sample, strategy, swap, raw_response):
     }
 
 
-def predict(samples, evaluator, data_root, strategy="direct", swap=False, max_new_tokens=256):
+def predict(samples, evaluator, data_root, strategy="direct", swap=False, max_new_tokens=None):
     """Predict a batch of samples; returns prediction records in input order."""
-    if strategy not in IMPLEMENTED:
-        raise NotImplementedError(f"Strategy {strategy!r} is not implemented yet")
+    max_new_tokens = max_new_tokens or DEFAULT_MAX_NEW_TOKENS[strategy]
     prompts = [build_prompt(s, strategy) for s in samples]
     images = [load_pair_image(s, data_root, swap) for s in samples]
     responses = evaluator.generate(prompts, images, max_new_tokens)
@@ -199,11 +253,14 @@ def _git_commit():
 
 
 def run(manifest, data_root, out, evaluator, strategy="direct", swap=False,
-        n_per_scenario=None, seed=0, batch_size=8, max_new_tokens=256):
+        n_per_scenario=None, seed=0, batch_size=8, max_new_tokens=None):
     """Run one condition over a manifest (or a stratified subset) and save predictions.
 
     Resumes if ``out`` already exists. Writes run settings to ``<out>.config.json``.
     """
+    if strategy not in STRATEGIES:
+        raise ValueError(f"Unknown prompting strategy: {strategy!r}")
+    max_new_tokens = max_new_tokens or DEFAULT_MAX_NEW_TOKENS[strategy]
     rows = load_manifest(manifest)
     samples = stratified_subset(rows, n_per_scenario, seed) if n_per_scenario else rows
 
@@ -323,7 +380,8 @@ def main(argv=None):
     r.add_argument("--n-per-scenario", type=int, default=None, help="default: all samples")
     r.add_argument("--seed", type=int, default=0)
     r.add_argument("--batch-size", type=int, default=8)
-    r.add_argument("--max-new-tokens", type=int, default=256)
+    r.add_argument("--max-new-tokens", type=int, default=None,
+                   help="default depends on strategy: " + str(DEFAULT_MAX_NEW_TOKENS))
     r.add_argument("--model", default=DEFAULT_MODEL)
     r.add_argument("--dtype", default="float16", choices=["float16", "bfloat16", "float32"])
 
