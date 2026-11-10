@@ -113,6 +113,33 @@ def manifest_from_clean(records, split="test", dim="2D"):
     ]
 
 
+RELEASE_JSON = {"train": "{dim}/train_set_{dim}.json", "test": "{dim}/test_dataset_{dim}.json"}
+
+
+def fetch_patheval(split, local_dir, dim="2D", limit=None, repo="maghzal/PathEval"):
+    """Download a PathEval split (optionally only the first ``limit`` records) and its images.
+
+    Writes ``<local_dir>/<split>_<dim>.jsonl`` (team manifest, image paths relative to
+    ``local_dir``) and returns its path. Already-downloaded images are reused.
+    """
+    from huggingface_hub import HfApi, hf_hub_download, snapshot_download
+
+    repo_files = set(HfApi().list_repo_files(repo, repo_type="dataset"))
+    with open(hf_hub_download(repo, RELEASE_JSON[split].format(dim=dim), repo_type="dataset")) as f:
+        records = json.load(f)
+    records = records[:limit] if limit else records
+    rows = manifest_from_release(records, repo_files, split, dim)
+    images = [r["image_paths"][0] for r in rows]
+    snapshot_download(repo, repo_type="dataset", allow_patterns=images, local_dir=local_dir)
+    missing = [p for p in images if not (Path(local_dir) / p).exists()]
+    if missing:
+        raise FileNotFoundError(f"{len(missing)} images failed to download, e.g. {missing[:3]}")
+    out = Path(local_dir) / f"{split}_{dim}.jsonl"
+    write_jsonl(rows, out)
+    print(f"{split}: {len(rows)} records (first id {rows[0]['sample_id']}) -> {out}")
+    return out
+
+
 # --------------------------------------------------------------------------
 # Subsets
 # --------------------------------------------------------------------------

@@ -10,6 +10,10 @@ Usage (from the repository root):
     # Same examples with the left/right halves swapped (position-bias test)
     python -m src.prompting run ... --swap --out results/direct_2D_swapped.jsonl
 
+    # With visual scaffolding (two separate images) and/or grounding evidence
+    python -m src.prompting run ... --scaffold-dir results/scaffolded
+    python -m src.prompting run ... --grounding clip --attributes results/attributes_test.jsonl
+
     # Quick sanity summary (official metrics live in src/evaluation.py)
     python -m src.prompting summarize results/direct_2D.jsonl \\
         --swapped results/direct_2D_swapped.jsonl
@@ -58,14 +62,18 @@ DEFAULT_MAX_NEW_TOKENS = {"direct": 256, "step_by_step": 768, "structured": 1024
 # --------------------------------------------------------------------------
 
 LAYOUT = "Path 1 is on the left side and Path 2 is on the right side."
+# Visual scaffolding (Zoe, src/visual_scaffolding.py) shows the two paths as separate images.
+SCAFFOLD_LAYOUT = "The first image shows Path 1 and the second image shows Path 2."
 
 # Final-answer line shared by the reasoning prompts, so all strategies are parsed the same way.
 FINAL_ANSWER = ("After your reasoning, end with one final line in exactly this format:\n"
                 "Answer: Path 1   or   Answer: Path 2")
 
+# Every prompt is:  "{scenario} {layout}\n" + [grounding evidence] + strategy body.
+# Without evidence and scaffolding, the text is exactly the original single-image prompt.
+
 # 1. Direct: answer immediately (wording from the original PathEval zero-shot code).
-DIRECT_TEMPLATE = (
-    "{scenario} " + LAYOUT + "\n"
+DIRECT_BODY = (
     "Your answer should follow the format below:\n"
     "Answer: Path 1 or Path 2.\n"
     "Explanation: Why you chose the path (1 or 2)."
@@ -73,8 +81,7 @@ DIRECT_TEMPLATE = (
 
 # 2. Step-by-step: generic chain-of-thought. Asks the model to reason first but gives
 #    no task-specific structure, so it isolates the effect of "thinking before answering".
-STEP_BY_STEP_TEMPLATE = (
-    "{scenario} " + LAYOUT + "\n"
+STEP_BY_STEP_BODY = (
     "Let's think step by step. First describe what you see in each path, "
     "then reason about which path better satisfies the scenario.\n"
     + FINAL_ANSWER
@@ -95,8 +102,7 @@ DESCRIPTOR_DEFINITIONS = (
     "- Maximum angle: the sharpest turn angle in the path."
 )
 
-STRUCTURED_TEMPLATE = (
-    "{scenario} " + LAYOUT + "\n"
+STRUCTURED_BODY = (
     "Paths can be described by these properties:\n" + DESCRIPTOR_DEFINITIONS + "\n"
     "Work through the following steps.\n"
     "Step 1 - Relevant properties: list the properties that matter for this scenario, "
@@ -108,18 +114,56 @@ STRUCTURED_TEMPLATE = (
     + FINAL_ANSWER
 )
 
-TEMPLATES = {
-    "direct": DIRECT_TEMPLATE,
-    "step_by_step": STEP_BY_STEP_TEMPLATE,
-    "structured": STRUCTURED_TEMPLATE,
+BODIES = {
+    "direct": DIRECT_BODY,
+    "step_by_step": STEP_BY_STEP_BODY,
+    "structured": STRUCTURED_BODY,
+}
+
+# --- Grounding evidence (attributes from src/grounding.py) -------------------------------
+
+ATTRIBUTE_PHRASES = {
+    "Path length": {"Path 1": "Path 1 is shorter", "Path 2": "Path 2 is shorter",
+                    "Tie": "Both paths have about the same length"},
+    "Sharp turns": {"Path 1": "Path 1 has fewer sharp turns",
+                    "Path 2": "Path 2 has fewer sharp turns",
+                    "Tie": "Both paths have the same number of sharp turns"},
+}
+EVIDENCE_HEADERS = {
+    "clip": ("A perception model estimated the following from the image. It can be wrong; "
+             "the confidence is its estimated probability of being right.\n"),
+    "oracle": "The following facts were measured exactly from the paths:\n",
 }
 
 
-def build_prompt(sample, strategy="direct"):
-    """Build the text prompt for one sample. Uses only the scenario text (no labels/descriptors)."""
+def describe_attributes(attributes):
+    """Turn grounding attributes into the evidence block of a prompt ('' if none)."""
+    if not attributes:
+        return ""
+    sources = {a.get("source", "clip") for a in attributes.values()}
+    if len(sources) != 1 or not sources <= set(EVIDENCE_HEADERS):
+        raise ValueError(f"Mixed or unknown attribute sources: {sources}")
+    source = sources.pop()
+    lines = []
+    for attr, a in attributes.items():
+        phrases = ATTRIBUTE_PHRASES.get(attr)
+        text = (phrases[a["lower"]] if phrases else
+                f"{a['lower']} has the lower {attr.lower()}" if a["lower"] != "Tie" else
+                f"Both paths have about the same {attr.lower()}")
+        lines.append(f"- {text}" + (f" (confidence {a['confidence']:.2f})." if source == "clip" else "."))
+    return EVIDENCE_HEADERS[source] + "\n".join(lines) + "\n"
+
+
+def build_prompt(sample, strategy="direct", attributes=None, scaffold=False):
+    """Build the text prompt for one sample.
+
+    Uses only the scenario text, plus grounding ``attributes`` when given (predicted, or
+    ground truth for the oracle condition). Labels are never used.
+    """
     if strategy not in STRATEGIES:
         raise ValueError(f"Unknown prompting strategy: {strategy!r}")
-    return TEMPLATES[strategy].format(scenario=sample["scenario"])
+    layout = SCAFFOLD_LAYOUT if scaffold else LAYOUT
+    return f"{sample['scenario']} {layout}\n" + describe_attributes(attributes) + BODIES[strategy]
 
 
 # --------------------------------------------------------------------------
@@ -182,14 +226,20 @@ class QwenPathEvaluator:
         self.processor.tokenizer.padding_side = "left"
 
     def generate(self, prompts, images, max_new_tokens=256):
-        """Generate one response per (prompt, image) pair."""
-        texts = []
-        for prompt in prompts:
-            messages = [{"role": "user", "content": [
-                {"type": "image"}, {"type": "text", "text": prompt}]}]
+        """Generate one response per prompt.
+
+        ``images[i]`` is one PIL image, or a list of images shown in that order
+        (e.g. Path 1 then Path 2 for visual scaffolding).
+        """
+        texts, flat_images = [], []
+        for prompt, imgs in zip(prompts, images):
+            imgs = imgs if isinstance(imgs, (list, tuple)) else [imgs]
+            flat_images.extend(imgs)
+            messages = [{"role": "user", "content": [{"type": "image"} for _ in imgs] +
+                         [{"type": "text", "text": prompt}]}]
             texts.append(self.processor.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True))
-        inputs = self.processor(text=texts, images=images, padding=True,
+        inputs = self.processor(text=texts, images=flat_images, padding=True,
                                 return_tensors="pt").to(self.model.device)
         with self.torch.no_grad():
             out = self.model.generate(**inputs, max_new_tokens=max_new_tokens,
@@ -217,15 +267,20 @@ class QwenPathEvaluator:
 # Prediction
 # --------------------------------------------------------------------------
 
-def condition_name(strategy, swap=False):
-    return f"{strategy}_swapped" if swap else strategy
+GROUNDING_SOURCES = ("clip", "oracle")
 
 
-def make_record(sample, strategy, swap, raw_response):
+def condition_name(strategy, swap=False, scaffold=False, grounding=None):
+    """e.g. 'direct', 'structured+clip', 'direct+scaffold', 'structured+oracle_swapped'."""
+    name = strategy + ("+scaffold" if scaffold else "") + (f"+{grounding}" if grounding else "")
+    return f"{name}_swapped" if swap else name
+
+
+def make_record(sample, condition, swap, raw_response):
     """One prediction row in the team contract format (plus convenience fields)."""
     return {
         "sample_id": sample["sample_id"],
-        "condition": condition_name(strategy, swap),
+        "condition": condition,
         "prediction": parse_answer(raw_response),
         "raw_response": raw_response,
         # Convenience fields for quick checks; evaluation should join on the manifest.
@@ -235,13 +290,68 @@ def make_record(sample, strategy, swap, raw_response):
     }
 
 
-def predict(samples, evaluator, data_root, strategy="direct", swap=False, max_new_tokens=None):
-    """Predict a batch of samples; returns prediction records in input order."""
+def load_scaffolded_images(paths, swap=False):
+    """Load Zoe's separate (Path 1, Path 2) images; swapped means Path 2 is shown first."""
+    from PIL import Image
+
+    imgs = []
+    for p in paths:
+        with Image.open(p) as img:
+            imgs.append(img.convert("RGB"))
+    return imgs[::-1] if swap else imgs
+
+
+def scaffold_samples(samples, data_root, out_dir):
+    """Split images with Zoe's ``scaffold()`` (once) -> {sample_id: (path1_file, path2_file)}."""
+    from src.visual_scaffolding import scaffold
+
+    sources = {s["sample_id"]: Path(data_root) / s["image_paths"][0] for s in samples}
+    expected = {sid: (Path(out_dir) / f"{src.stem}_path1.png", Path(out_dir) / f"{src.stem}_path2.png")
+                for sid, src in sources.items()}
+    missing = [sid for sid, (a, b) in expected.items() if not (a.exists() and b.exists())]
+    if missing:
+        written = scaffold([str(sources[sid]) for sid in missing], out_dir)
+        for sid, w in zip(missing, written):
+            assert Path(w["path1"]) == expected[sid][0], "unexpected scaffold file name"
+    return expected
+
+
+def predict(samples, evaluator, data_root, strategy="direct", swap=False, max_new_tokens=None,
+            scaffold_paths=None, attributes=None, grounding=None):
+    """Predict a batch of samples; returns prediction records in input order.
+
+    scaffold_paths: {sample_id: (path1_file, path2_file)} to show two separate images.
+    attributes:     {(sample_id, swapped): attribute dict} grounding evidence for the prompt.
+    """
     max_new_tokens = max_new_tokens or DEFAULT_MAX_NEW_TOKENS[strategy]
-    prompts = [build_prompt(s, strategy) for s in samples]
-    images = [load_pair_image(s, data_root, swap) for s in samples]
+    scaffold = scaffold_paths is not None
+    condition = condition_name(strategy, swap, scaffold, grounding)
+    prompts, images = [], []
+    for s in samples:
+        attrs = attributes[(s["sample_id"], swap)] if attributes is not None else None
+        prompts.append(build_prompt(s, strategy, attrs, scaffold))
+        images.append(load_scaffolded_images(scaffold_paths[s["sample_id"]], swap) if scaffold
+                      else load_pair_image(s, data_root, swap))
     responses = evaluator.generate(prompts, images, max_new_tokens)
-    return [make_record(s, strategy, swap, r) for s, r in zip(samples, responses)]
+    return [make_record(s, condition, swap, r) for s, r in zip(samples, responses)]
+
+
+def grounding_attributes(samples, grounding, attributes_path=None, swap=False):
+    """Collect the evidence for each sample: learned ('clip') or ground truth ('oracle')."""
+    if grounding == "oracle":
+        from src.grounding import oracle_attributes
+        return {(s["sample_id"], swap): oracle_attributes(s, swap) for s in samples}
+    if grounding == "clip":
+        if not attributes_path:
+            raise ValueError("grounding='clip' needs attributes_path (from src.grounding predict)")
+        from src.grounding import load_attribute_file
+        attrs = load_attribute_file(attributes_path)
+        missing = [s["sample_id"] for s in samples if (s["sample_id"], swap) not in attrs]
+        if missing:
+            raise ValueError(f"{len(missing)} samples have no predicted attributes "
+                             f"(swapped={swap}), e.g. {missing[:3]}")
+        return attrs
+    raise ValueError(f"Unknown grounding source: {grounding!r}")
 
 
 def _git_commit():
@@ -253,13 +363,20 @@ def _git_commit():
 
 
 def run(manifest, data_root, out, evaluator, strategy="direct", swap=False,
-        n_per_scenario=None, seed=0, batch_size=8, max_new_tokens=None):
+        n_per_scenario=None, seed=0, batch_size=8, max_new_tokens=None,
+        scaffold_dir=None, grounding=None, attributes_path=None):
     """Run one condition over a manifest (or a stratified subset) and save predictions.
 
+    scaffold_dir: show Path 1 and Path 2 as separate images, split by Zoe's scaffold()
+                  into this folder.
+    grounding:    add attribute evidence to the prompt: "clip" (predictions from
+                  ``attributes_path``) or "oracle" (ground truth, upper bound).
     Resumes if ``out`` already exists. Writes run settings to ``<out>.config.json``.
     """
     if strategy not in STRATEGIES:
         raise ValueError(f"Unknown prompting strategy: {strategy!r}")
+    if grounding not in (None,) + GROUNDING_SOURCES:
+        raise ValueError(f"Unknown grounding source: {grounding!r}")
     max_new_tokens = max_new_tokens or DEFAULT_MAX_NEW_TOKENS[strategy]
     rows = load_manifest(manifest)
     samples = stratified_subset(rows, n_per_scenario, seed) if n_per_scenario else rows
@@ -268,12 +385,18 @@ def run(manifest, data_root, out, evaluator, strategy="direct", swap=False,
     out.parent.mkdir(parents=True, exist_ok=True)
     done = {r["sample_id"] for r in read_jsonl(out)} if out.exists() else set()
     todo = [s for s in samples if s["sample_id"] not in done]
+    scaffold_paths = scaffold_samples(todo, data_root, scaffold_dir) if scaffold_dir else None
+    attributes = grounding_attributes(samples, grounding, attributes_path, swap) if grounding else None
 
     config = {
-        "condition": condition_name(strategy, swap),
+        "condition": condition_name(strategy, swap, bool(scaffold_dir), grounding),
         "strategy": strategy,
         "swap": swap,
-        "prompt_template": build_prompt({"scenario": "{scenario}"}, strategy),
+        "scaffold": bool(scaffold_dir),
+        "grounding": grounding,
+        "attributes_path": str(attributes_path) if attributes_path else None,
+        "prompt_template": build_prompt({"scenario": "{scenario}"}, strategy,
+                                        scaffold=bool(scaffold_dir)),
         "manifest": str(manifest),
         "n_samples": len(samples),
         "n_per_scenario": n_per_scenario,
@@ -295,7 +418,8 @@ def run(manifest, data_root, out, evaluator, strategy="direct", swap=False,
     with open(out, "a") as f:
         for i in range(0, len(todo), batch_size):
             batch = todo[i:i + batch_size]
-            for record in predict(batch, evaluator, data_root, strategy, swap, max_new_tokens):
+            for record in predict(batch, evaluator, data_root, strategy, swap, max_new_tokens,
+                                  scaffold_paths, attributes, grounding):
                 f.write(json.dumps(record) + "\n")
             f.flush()
             n = i + len(batch)
@@ -382,6 +506,11 @@ def main(argv=None):
     r.add_argument("--batch-size", type=int, default=8)
     r.add_argument("--max-new-tokens", type=int, default=None,
                    help="default depends on strategy: " + str(DEFAULT_MAX_NEW_TOKENS))
+    r.add_argument("--scaffold-dir", default=None,
+                   help="show the two paths as separate images (Zoe's scaffold) cached here")
+    r.add_argument("--grounding", default=None, choices=GROUNDING_SOURCES,
+                   help="add attribute evidence: clip (needs --attributes) or oracle")
+    r.add_argument("--attributes", default=None, help="attribute file from src.grounding predict")
     r.add_argument("--model", default=DEFAULT_MODEL)
     r.add_argument("--dtype", default="float16", choices=["float16", "bfloat16", "float32"])
 
@@ -394,7 +523,8 @@ def main(argv=None):
     if args.command == "run":
         evaluator = QwenPathEvaluator(args.model, args.dtype)
         run(args.manifest, args.data_root, args.out, evaluator, args.strategy, args.swap,
-            args.n_per_scenario, args.seed, args.batch_size, args.max_new_tokens)
+            args.n_per_scenario, args.seed, args.batch_size, args.max_new_tokens,
+            args.scaffold_dir, args.grounding, args.attributes)
     else:
         print_summary(summarize(args.predictions, args.swapped, args.per_scenario))
 
