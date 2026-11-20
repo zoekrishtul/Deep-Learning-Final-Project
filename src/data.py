@@ -127,7 +127,11 @@ def fetch_patheval(split, local_dir, dim="2D", limit=None, repo="maghzal/PathEva
     repo_files = set(HfApi().list_repo_files(repo, repo_type="dataset"))
     with open(hf_hub_download(repo, RELEASE_JSON[split].format(dim=dim), repo_type="dataset")) as f:
         records = json.load(f)
-    records = records[:limit] if limit else records
+    records = [
+    r for r in records
+    if str(r["image"]).endswith(f"_{dim}.png")
+]
+records = records[:limit] if limit is not None else records
     rows = manifest_from_release(records, repo_files, split, dim)
     images = [r["image_paths"][0] for r in rows]
     snapshot_download(repo, repo_type="dataset", allow_patterns=images, local_dir=local_dir)
