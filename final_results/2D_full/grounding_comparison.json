@@ -1,0 +1,50 @@
+[
+  {
+    "attribute": "Path length",
+    "head": "linear",
+    "best_epoch": 200,
+    "best_val_loss": 0.5820189118385315,
+    "train_acc": 0.8081483840942383,
+    "val_acc": 0.75,
+    "val_macro_f1": 0.7470023095357037,
+    "val_majority_baseline": 0.5382775068283081,
+    "n_train": 3289,
+    "n_val": 836
+  },
+  {
+    "attribute": "Path length",
+    "head": "mlp",
+    "best_epoch": 200,
+    "best_val_loss": 0.35477831959724426,
+    "train_acc": 0.9191243648529053,
+    "val_acc": 0.8516746163368225,
+    "val_macro_f1": 0.8503038284697673,
+    "val_majority_baseline": 0.5382775068283081,
+    "n_train": 3289,
+    "n_val": 836
+  },
+  {
+    "attribute": "Sharp turns",
+    "head": "linear",
+    "best_epoch": 200,
+    "best_val_loss": 0.7978476881980896,
+    "train_acc": 0.6628154516220093,
+    "val_acc": 0.6949760913848877,
+    "val_macro_f1": 0.6322378975903825,
+    "val_majority_baseline": 0.6507176756858826,
+    "n_train": 3289,
+    "n_val": 836
+  },
+  {
+    "attribute": "Sharp turns",
+    "head": "mlp",
+    "best_epoch": 200,
+    "best_val_loss": 0.7105899453163147,
+    "train_acc": 0.7442991733551025,
+    "val_acc": 0.7535884976387024,
+    "val_macro_f1": 0.7077196199957972,
+    "val_majority_baseline": 0.6507176756858826,
+    "n_train": 3289,
+    "n_val": 836
+  }
+]
